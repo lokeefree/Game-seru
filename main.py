@@ -1,615 +1,342 @@
-# ==========================================
-# AFTERFALL - MAIN GAME
-# ==========================================
-
+import asyncio
 import pygame
+import random
 
-import config
-
-from world import World
-from asset_loader import AssetLoader
-from building import get_building_definition
-
-from jobs import (
-    assign_job,
-    send_to_workplace
-)
-
-from systems.simulation import Simulation
-from rendering.world_renderer import WorldRenderer
-from rendering.hud_renderer import HUDRenderer
-from game.game_state import GameState
-from game.input_handler import InputHandler
-from ui import SettlementUI
-from relationships import RelationshipsSystem
-from exploration import ExplorationSystem
-
-
-# ==========================================
-# INITIALIZATION
-# ==========================================
+# =====================================
+# MINI RACING - PYGAME / PYGBAG VERSION
+# =====================================
 
 pygame.init()
 
-screen = pygame.display.set_mode(
-    (
-        config.SCREEN_WIDTH,
-        config.SCREEN_HEIGHT
-    )
-)
+WIDTH = 480
+HEIGHT = 650
 
-pygame.display.set_caption(
-    config.GAME_TITLE
-)
+# Keep a fixed logical resolution. Pygbag displays this canvas in the browser.
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("MINI RACING")
 
 clock = pygame.time.Clock()
+game_surface = pygame.Surface((WIDTH, HEIGHT))
 
-assets = AssetLoader()
+# Colors
+WHITE = (255, 255, 255)
+BLACK = (15, 15, 20)
+GRAY = (65, 65, 70)
+GREEN = (35, 130, 65)
+BLUE = (30, 130, 255)
+RED = (230, 45, 45)
+YELLOW = (255, 210, 40)
+CYAN = (0, 220, 255)
 
-world = World()
+font = pygame.font.Font(None, 36)
+small_font = pygame.font.Font(None, 25)
+big_font = pygame.font.Font(None, 70)
 
+# =====================================
+# GAME SETTINGS
+# =====================================
 
-# ==========================================
-# SURVIVOR SPRITE FUNCTION
-# ==========================================
+ROAD_LEFT = 65
+ROAD_RIGHT = 415
+LANES = [125, 240, 355]
 
-def load_survivor_sprite(survivor):
+player_x = 240
+# Moved upward to leave room for the on-screen controls.
+player_y = 455
 
-    skin = assets.get_skin(
-        survivor.appearance["skin"]
-    )
+player_speed = 500
+world_speed = 300
 
-    eyes = assets.get_eyes(
-        survivor.appearance["eyes"]
-    )
+score = 0
+game_over = False
+game_started = False
 
-    hair = assets.get_hair(
-        survivor.appearance["hair"]
-    )
+enemies = []
+spawn_timer = 0
+road_offset = 0
 
-    top = assets.get_top(
-        survivor.appearance["top"]
-    )
+# On-screen controls (these were below the screen in the original code).
+# They are visible on both desktop and mobile.
+left_button = pygame.Rect(20, 565, 85, 65)
+right_button = pygame.Rect(115, 565, 85, 65)
+brake_button = pygame.Rect(280, 565, 85, 65)
+gas_button = pygame.Rect(375, 565, 85, 65)
 
-    bottom = assets.get_bottom(
-        survivor.appearance["bottom"]
-    )
-
-    shoes = assets.get_shoes(
-        survivor.appearance["shoes"]
-    )
-
-    return (
-        skin,
-        eyes,
-        hair,
-        top,
-        bottom,
-        shoes
-    )
-
-
-# ==========================================
-# STARTING SURVIVOR
-# ==========================================
-
-starting_survivor = world.survivors[0]
-
-assign_job(
-    starting_survivor,
-    "Farmer"
-)
-
-send_to_workplace(
-    starting_survivor,
-    world
-)
+touching = set()
+running = True
 
 
-# ==========================================
-# FONTS
-# ==========================================
+# =====================================
+# FUNCTIONS
+# =====================================
 
-font = pygame.font.Font(
-    None,
-    24
-)
-
-small_font = pygame.font.Font(
-    None,
-    18
-)
-
-large_font = pygame.font.Font(
-    None,
-    32
-)
+def draw_text(surface, text, font_type, color, x, y):
+    image = font_type.render(text, True, color)
+    rect = image.get_rect(center=(x, y))
+    surface.blit(image, rect)
 
 
-# ==========================================
-# GAME STATE
-# ==========================================
+def draw_car(surface, x, y, color):
+    x = int(x)
+    y = int(y)
 
-# These values used to live as loose variables in main.py.
-# They now live together in one object so later systems can share
-# the current game state without adding more global variables here.
-game = GameState(world)
-input_handler = InputHandler()
-exploration = ExplorationSystem()
-simulation = Simulation(exploration)
-world_renderer = WorldRenderer()
-hud_renderer = HUDRenderer()
-ui = SettlementUI(screen)
-ui.exploration = exploration
-ui.events = simulation.events
-ui.research = simulation.research
-ui.trading = simulation.trading
-ui.relationships = simulation.relationships
+    # Wheels
+    pygame.draw.rect(surface, BLACK, (x - 26, y + 15, 10, 23), border_radius=4)
+    pygame.draw.rect(surface, BLACK, (x + 16, y + 15, 10, 23), border_radius=4)
+    pygame.draw.rect(surface, BLACK, (x - 26, y + 55, 10, 23), border_radius=4)
+    pygame.draw.rect(surface, BLACK, (x + 16, y + 55, 10, 23), border_radius=4)
+
+    # Car body
+    pygame.draw.rect(surface, color, (x - 22, y, 44, 85), border_radius=10)
+
+    # Windows
+    pygame.draw.rect(surface, (120, 210, 240), (x - 16, y + 17, 32, 23), border_radius=5)
+    pygame.draw.rect(surface, (30, 60, 90), (x - 15, y + 48, 30, 16), border_radius=4)
+
+    # Headlights
+    pygame.draw.rect(surface, YELLOW, (x - 18, y + 3, 10, 5))
+    pygame.draw.rect(surface, YELLOW, (x + 8, y + 3, 10, 5))
 
 
-# ==========================================
-# CANDIDATE APPLICATION
-# ==========================================
+def draw_road(surface, dt):
+    global road_offset
 
-def draw_candidate_application(
-    candidate
-):
+    surface.fill(GREEN)
 
-    overlay = pygame.Surface(
-        (
-            config.SCREEN_WIDTH,
-            config.SCREEN_HEIGHT
-        )
-    )
+    pygame.draw.rect(surface, GRAY, (ROAD_LEFT, 0, ROAD_RIGHT - ROAD_LEFT, HEIGHT))
+    pygame.draw.rect(surface, WHITE, (ROAD_LEFT, 0, 6, HEIGHT))
+    pygame.draw.rect(surface, WHITE, (ROAD_RIGHT - 6, 0, 6, HEIGHT))
 
-    overlay.set_alpha(
-        210
-    )
+    road_offset = (road_offset + world_speed * dt) % 100
 
-    overlay.fill(
-        (10, 12, 15)
-    )
-
-    screen.blit(
-        overlay,
-        (0, 0)
-    )
-
-    panel = pygame.Rect(
-        120,
-        55,
-        912,
-        540
-    )
-
-    pygame.draw.rect(
-        screen,
-        (32, 35, 40),
-        panel
-    )
-
-    pygame.draw.rect(
-        screen,
-        (100, 105, 115),
-        panel,
-        2
-    )
-
-    title = large_font.render(
-        "SURVIVOR APPLICATION",
-        True,
-        (255, 255, 255)
-    )
-
-    screen.blit(
-        title,
-        (
-            390,
-            75
-        )
-    )
-
-    person = candidate.survivor
-
-    sprite_parts = load_survivor_sprite(
-        person
-    )
-
-    preview_x = 190
-    preview_y = 145
-
-    for sprite in sprite_parts:
-
-        screen.blit(
-            sprite,
-            (
-                preview_x,
-                preview_y
+    for lane_x in [182, 297]:
+        for y in range(-100, HEIGHT + 100, 100):
+            line_y = y + int(road_offset)
+            pygame.draw.rect(
+                surface, WHITE,
+                (lane_x, line_y, 6, 50),
+                border_radius=3
             )
-        )
 
-    info_x = 390
 
-    name_text = font.render(
-        person.name,
-        True,
-        (255, 255, 255)
-    )
+def spawn_enemy():
+    lane = random.choice(LANES)
 
-    screen.blit(
-        name_text,
-        (
-            info_x,
-            140
-        )
-    )
+    enemies.append({
+        "x": lane,
+        "y": -100,
+        "speed": random.randint(50, 150),
+        "color": random.choice([
+            RED,
+            YELLOW,
+            (180, 50, 220),
+            (255, 120, 20)
+        ])
+    })
 
-    age_text = small_font.render(
-        f"Age: {person.age}",
-        True,
-        (220, 220, 220)
-    )
 
-    screen.blit(
-        age_text,
-        (
-            info_x,
-            180
-        )
-    )
+def reset_game():
+    global player_x, score, game_over, game_started
+    global enemies, spawn_timer, world_speed, road_offset
 
-    health_text = small_font.render(
-        f"Health: {person.health}/100",
-        True,
-        (220, 220, 220)
-    )
+    player_x = 240
+    score = 0
+    game_over = False
+    game_started = True
 
-    screen.blit(
-        health_text,
-        (
-            info_x,
-            210
-        )
-    )
+    enemies = []
+    spawn_timer = 0
+    world_speed = 300
+    road_offset = 0
+    touching.clear()
 
-    morale_text = small_font.render(
-        f"Morale: {person.morale}/100",
-        True,
-        (220, 220, 220)
-    )
 
-    screen.blit(
-        morale_text,
-        (
-            info_x,
-            240
-        )
-    )
+def collision(x1, y1, x2, y2):
+    rect1 = pygame.Rect(x1 - 19, y1 + 5, 38, 75)
+    rect2 = pygame.Rect(x2 - 19, y2 + 5, 38, 75)
+    return rect1.colliderect(rect2)
 
-    # ==========================================
-    # SKILLS
-    # ==========================================
 
-    skills_title = font.render(
-        "SKILLS",
-        True,
-        (255, 255, 255)
-    )
+def draw_button(surface, rect, label, active=False):
+    color = (0, 145, 195) if active else (35, 45, 60)
 
-    screen.blit(
-        skills_title,
-        (
-            390,
-            285
-        )
-    )
+    pygame.draw.rect(surface, color, rect, border_radius=13)
+    pygame.draw.rect(surface, WHITE, rect, width=2, border_radius=13)
+    draw_text(surface, label, font, WHITE, rect.centerx, rect.centery)
 
-    skill_y = 325
 
-    for skill_name, value in (
-        person.skills.items()
-    ):
+def start_or_restart_at(x, y):
+    """Handle taps/clicks on the start and play-again panels."""
+    if 100 <= x <= 380 and 350 <= y <= 500:
+        if not game_started or game_over:
+            reset_game()
 
-        skill_text = small_font.render(
-            f"{skill_name}: {value}/10",
-            True,
-            (210, 210, 210)
-        )
 
-        screen.blit(
-            skill_text,
-            (
-                390,
-                skill_y
+def handle_control_press(x, y):
+    if left_button.collidepoint(x, y):
+        touching.add("left")
+    elif right_button.collidepoint(x, y):
+        touching.add("right")
+    elif brake_button.collidepoint(x, y):
+        touching.add("brake")
+    elif gas_button.collidepoint(x, y):
+        touching.add("gas")
+
+
+# =====================================
+# MAIN ASYNC GAME LOOP FOR PYGBAG
+# =====================================
+
+async def main():
+    global running, game_started, game_over
+    global player_x, world_speed, spawn_timer, score
+
+    while running:
+        # Limit delta time so movement stays stable if a frame takes longer.
+        dt = min(clock.tick(60) / 1000, 0.05)
+
+        # Read keyboard controls.
+        keys = pygame.key.get_pressed()
+        move_left = bool(keys[pygame.K_LEFT] or keys[pygame.K_a])
+        move_right = bool(keys[pygame.K_RIGHT] or keys[pygame.K_d])
+        accelerate = bool(keys[pygame.K_UP] or keys[pygame.K_w])
+        brake = bool(keys[pygame.K_DOWN] or keys[pygame.K_s])
+
+        # Add on-screen controls.
+        move_left = move_left or "left" in touching
+        move_right = move_right or "right" in touching
+        accelerate = accelerate or "gas" in touching
+        brake = brake or "brake" in touching
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+                elif event.key == pygame.K_RETURN:
+                    if not game_started or game_over:
+                        reset_game()
+
+            # Mouse input (also works for many touchscreen browsers).
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                mx, my = event.pos
+
+                if game_over or not game_started:
+                    start_or_restart_at(mx, my)
+                else:
+                    handle_control_press(mx, my)
+
+            elif event.type == pygame.MOUSEBUTTONUP:
+                touching.clear()
+
+            # Native touchscreen input. Finger coordinates are normalized 0..1.
+            elif event.type == pygame.FINGERDOWN:
+                fx = int(event.x * WIDTH)
+                fy = int(event.y * HEIGHT)
+
+                if game_over or not game_started:
+                    start_or_restart_at(fx, fy)
+                else:
+                    handle_control_press(fx, fy)
+
+            elif event.type == pygame.FINGERUP:
+                touching.clear()
+
+        # =================================
+        # UPDATE GAME
+        # =================================
+
+        if game_started and not game_over:
+            if accelerate:
+                world_speed = min(world_speed + 180 * dt, 600)
+            elif brake:
+                world_speed = max(world_speed - 250 * dt, 150)
+            else:
+                world_speed += (300 - world_speed) * dt
+
+            if move_left:
+                player_x -= player_speed * dt
+            if move_right:
+                player_x += player_speed * dt
+
+            player_x = max(ROAD_LEFT + 30, min(ROAD_RIGHT - 30, player_x))
+
+            spawn_timer += dt
+            spawn_delay = max(0.45, 1.2 - score / 1000)
+
+            if spawn_timer >= spawn_delay:
+                spawn_enemy()
+                spawn_timer = 0
+
+            for enemy in enemies:
+                enemy["y"] += (world_speed + enemy["speed"]) * dt
+
+                if collision(player_x, player_y, enemy["x"], enemy["y"]):
+                    game_over = True
+                    touching.clear()
+                    break
+
+            for enemy in enemies[:]:
+                if enemy["y"] > HEIGHT + 100:
+                    enemies.remove(enemy)
+                    score += 10
+
+        # =================================
+        # DRAW GAME
+        # =================================
+
+        draw_road(game_surface, dt if game_started and not game_over else 0)
+
+        for enemy in enemies:
+            draw_car(game_surface, enemy["x"], enemy["y"], enemy["color"])
+
+        if game_started:
+            draw_car(game_surface, player_x, player_y, BLUE)
+
+        # Score panel
+        pygame.draw.rect(game_surface, BLACK, (10, 10, 160, 75), border_radius=12)
+        draw_text(game_surface, f"SCORE: {score}", font, WHITE, 90, 35)
+        draw_text(game_surface, f"SPEED: {int(world_speed)}", small_font, CYAN, 90, 65)
+
+        # Always-visible controls, usable with mouse or touch.
+        draw_button(game_surface, left_button, "<", "left" in touching)
+        draw_button(game_surface, right_button, ">", "right" in touching)
+        draw_button(game_surface, brake_button, "BRAKE", "brake" in touching)
+        draw_button(game_surface, gas_button, "GAS", "gas" in touching)
+
+        # Start screen
+        if not game_started:
+            pygame.draw.rect(game_surface, BLACK, (45, 270, 390, 250), border_radius=20)
+            draw_text(game_surface, "MINI RACING", big_font, CYAN, 240, 330)
+            draw_text(game_surface, "PRESS ENTER OR PLAY", font, WHITE, 240, 410)
+            draw_text(game_surface, "Avoid enemy cars!", font, YELLOW, 240, 460)
+
+        # Game over screen
+        if game_over:
+            overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 175))
+            game_surface.blit(overlay, (0, 0))
+
+            draw_text(game_surface, "GAME OVER", big_font, RED, 240, 300)
+            draw_text(game_surface, f"FINAL SCORE: {score}", font, WHITE, 240, 370)
+
+            pygame.draw.rect(
+                game_surface, BLUE,
+                (100, 420, 280, 80),
+                border_radius=15
             )
-        )
+            draw_text(game_surface, "PLAY AGAIN", font, WHITE, 240, 460)
+            draw_text(game_surface, "Press ENTER to restart", font, YELLOW, 240, 550)
 
-        bar_x = 540
-        bar_y = skill_y + 3
+        screen.blit(game_surface, (0, 0))
+        pygame.display.flip()
 
-        pygame.draw.rect(
-            screen,
-            (55, 58, 65),
-            (
-                bar_x,
-                bar_y,
-                120,
-                14
-            )
-        )
-
-        pygame.draw.rect(
-            screen,
-            (130, 175, 130),
-            (
-                bar_x,
-                bar_y,
-                value * 12,
-                14
-            )
-        )
-
-        skill_y += 28
-
-    # ==========================================
-    # TRAITS
-    # ==========================================
-
-    traits_title = font.render(
-        "TRAITS",
-        True,
-        (255, 255, 255)
-    )
-
-    screen.blit(
-        traits_title,
-        (
-            700,
-            285
-        )
-    )
-
-    trait_y = 325
-
-    for trait in person.traits:
-
-        trait_text = small_font.render(
-            f"• {trait}",
-            True,
-            (210, 210, 210)
-        )
-
-        screen.blit(
-            trait_text,
-            (
-                700,
-                trait_y
-            )
-        )
-
-        trait_y += 28
-
-    # ==========================================
-    # CAPACITY STATUS
-    # ==========================================
-
-    capacity_available = (
-        world.has_population_space()
-    )
-
-    if capacity_available:
-
-        capacity_text = small_font.render(
-            "Settlement has available space.",
-            True,
-            (150, 220, 150)
-        )
-
-    else:
-
-        capacity_text = small_font.render(
-            "SETTLEMENT CAPACITY REACHED",
-            True,
-            (230, 150, 120)
-        )
-
-    screen.blit(
-        capacity_text,
-        (
-            390,
-            475
-        )
-    )
-
-    # ==========================================
-    # BUTTONS
-    # ==========================================
-
-    accept_button = pygame.Rect(
-        430,
-        515,
-        130,
-        45
-    )
-
-    reject_button = pygame.Rect(
-        590,
-        515,
-        130,
-        45
-    )
-
-    if capacity_available:
-
-        pygame.draw.rect(
-            screen,
-            (65, 115, 75),
-            accept_button
-        )
-
-    else:
-
-        pygame.draw.rect(
-            screen,
-            (75, 75, 75),
-            accept_button
-        )
-
-    pygame.draw.rect(
-        screen,
-        (120, 65, 65),
-        reject_button
-    )
-
-    accept_text = small_font.render(
-        "ACCEPT",
-        True,
-        (255, 255, 255)
-    )
-
-    reject_text = small_font.render(
-        "REJECT",
-        True,
-        (255, 255, 255)
-    )
-
-    screen.blit(
-        accept_text,
-        (
-            468,
-            529
-        )
-    )
-
-    screen.blit(
-        reject_text,
-        (
-            628,
-            529
-        )
-    )
-
-    controls = small_font.render(
-        "Click a button   |   C: close",
-        True,
-        (160, 160, 160)
-    )
-
-    screen.blit(
-        controls,
-        (
-            425,
-            570
-        )
-    )
-
-    return (
-        accept_button,
-        reject_button
-    )
+        # Important: yield control to the browser so it can render and process input.
+        await asyncio.sleep(0)
 
 
-# ==========================================
-# MAIN LOOP
-# ==========================================
-
-while game.running:
-
-    delta_time = (
-        clock.tick(config.FPS)
-        / 1000.0
-    )
-
-    game_minutes = 0
-
-    # ==========================================
-    # EVENTS / INPUT
-    # ==========================================
-
-    input_handler.handle_events(
-        game,
-        world,
-        ui
-    )
-
-    # ==========================================
-    # ==========================================
-    # SIMULATION
-    # ==========================================
-
-    simulation.update(
-        game,
-        world,
-        delta_time
-    )
-
-    # ==========================================
-    # DRAW WORLD
-    # ==========================================
-
-    screen.fill(
-        (35, 38, 42)
-    )
-
-    hud_renderer.draw_top_bar(
-        screen,
-        world,
-        font,
-        small_font
-    )
-
-    # ==========================================
-    # WORLD OBJECTS
-    # ==========================================
-
-    world_renderer.draw(
-        screen,
-        world,
-        game,
-        small_font,
-        load_survivor_sprite
-    )
-
-    # Keep the selected survivor valid if the population changes.
-    if game.selected_survivor is not None and game.selected_survivor not in world.survivors:
-        game.selected_survivor = world.survivors[0] if world.survivors else None
-
-    hud_renderer.draw_status(
-        screen,
-        game.last_event_message,
-        small_font
-    )
-
-    # ==========================================
-    # SETTLEMENT COMMAND BAR / MANAGEMENT WINDOWS
-    # ==========================================
-
-    if not game.application_open:
-        ui.draw(world, game)
-
-    # ==========================================
-    # CANDIDATE APPLICATION
-    # ==========================================
-
-    if (
-        game.application_open
-        and
-        world.current_candidate is not None
-    ):
-
-        draw_candidate_application(
-            world.current_candidate
-        )
-
-    # ==========================================
-    # DISPLAY
-    # ==========================================
-
-    pygame.display.flip()
-
-
-# ==========================================
-# SHUTDOWN
-# ==========================================
-
-pygame.quit()
+if __name__ == "__main__":
+    asyncio.run(main())
+    pygame.quit()
